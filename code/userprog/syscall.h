@@ -48,6 +48,7 @@
 #define SC_Wait 52
 #define SC_Signal 53
 #define SC_GetPid 54
+#define SC_Absolute 55
 
 #ifndef IN_ASM
 
@@ -70,6 +71,8 @@ void Halt();
 
 int Add(int op1, int op2);
 
+int Absolute(int op);
+
 int ReadNum();
 
 void PrintNum(int num);
@@ -80,9 +83,9 @@ void PrintChar(char character);
 
 int RandomNum();
 
-void ReadString(char *buffer, int length);
+void ReadString(char* buffer, int length);
 
-void PrintString(char *buffer);
+void PrintString(char* buffer);
 
 /* Address space control operations: Exit, Exec, Execv, and Join */
 
@@ -98,13 +101,13 @@ typedef int ThreadId;
 /* Run the specified executable, with no args */
 /* This can be implemented as a call to ExecV.
  */
-SpaceId Exec(char *exec_name);
+SpaceId Exec(char* exec_name);
 
 /* Run the executable, stored in the Nachos file "argv[0]", with
  * parameters stored in argv[1..argc-1] and return the
  * address space identifier
  */
-SpaceId ExecV(int argc, char *argv[]);
+SpaceId ExecV(int argc, char* argv[]);
 
 /* Only return once the user program "id" has finished.
  * Return the exit status.
@@ -135,25 +138,25 @@ typedef int OpenFileId;
 /* Create a Nachos file, with name "name" */
 /* Note: Create does not open the file.   */
 /* Return 1 on success, negative error code on failure */
-int Create(char *name);
+int Create(char* name);
 
-int CreateFile(char *name);
+int CreateFile(char* name);
 
 /* Remove a Nachos file, with name "name" */
-int Remove(char *name);
+int Remove(char* name);
 
 /* Open the Nachos file "name", and return an "OpenFileId" that can
  * be used to read and write to the file.
  */
 // OpenFileId Open(char *name);
 
-OpenFileId Open(char *name, int type);
+OpenFileId Open(char* name, int type);
 
 /* Write "size" bytes from "buffer" to the open file.
  * Return the number of bytes actually read on success.
  * On failure, a negative error code is returned.
  */
-int Write(char *buffer, int size, OpenFileId id);
+int Write(char* buffer, int size, OpenFileId id);
 
 /* Read "size" bytes from the open file into "buffer".
  * Return the number of bytes actually read -- if the open file isn't
@@ -161,7 +164,7 @@ int Write(char *buffer, int size, OpenFileId id);
  * characters to read, return whatever is available (for I/O devices,
  * you should always wait until you can return at least one character).
  */
-int Read(char *buffer, int size, OpenFileId id);
+int Read(char* buffer, int size, OpenFileId id);
 
 /* Set the seek position of the open file "id"
  * to the byte "position".
@@ -176,11 +179,11 @@ int Close(OpenFileId id);
 // Ham cho semaphore
 // Success: 0 - Failed: -1
 // Ham tao 1 semaphore voi ten semaphore
-int CreateSemaphore(char *name, int semval);
+int CreateSemaphore(char* name, int semval);
 
-int Wait(char *name);
+int Wait(char* name);
 
-int Signal(char *name);
+int Signal(char* name);
 
 /* User-level thread operations: Fork and Yield.  To allow multiple
  * threads to run within a user program.
