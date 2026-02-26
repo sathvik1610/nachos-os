@@ -33,9 +33,11 @@ const int STACK_FENCEPOST = 0xdedbeef;
 //	"threadName" is an arbitrary string, useful for debugging.
 //----------------------------------------------------------------------
 
-Thread::Thread(char *threadName, bool _has_dynamic_name /*=false*/) {
+Thread::Thread(char* threadName, int priority /*=0*/,
+               bool _has_dynamic_name /*=false*/) {
     has_dynamic_name = _has_dynamic_name;
     name = threadName;
+    this->priority = priority;
     stackTop = NULL;
     stack = NULL;
     status = JUST_CREATED;
@@ -64,7 +66,7 @@ Thread::~Thread() {
 
     ASSERT(this != kernel->currentThread);
     if (stack != NULL)
-        DeallocBoundedArray((char *)stack, StackSize * sizeof(int));
+        DeallocBoundedArray((char*)stack, StackSize * sizeof(int));
     if (has_dynamic_name) delete[] name;
 }
 
@@ -88,9 +90,9 @@ Thread::~Thread() {
 //	"arg" is a single argument to be passed to the procedure.
 //----------------------------------------------------------------------
 
-void Thread::Fork(VoidFunctionPtr func, void *arg) {
-    Interrupt *interrupt = kernel->interrupt;
-    Scheduler *scheduler = kernel->scheduler;
+void Thread::Fork(VoidFunctionPtr func, void* arg) {
+    Interrupt* interrupt = kernel->interrupt;
+    Scheduler* scheduler = kernel->scheduler;
     IntStatus oldLevel;
 
     DEBUG(dbgThread,
@@ -193,7 +195,7 @@ void Thread::Finish() {
 //----------------------------------------------------------------------
 
 void Thread::Yield() {
-    Thread *nextThread;
+    Thread* nextThread;
     IntStatus oldLevel = kernel->interrupt->SetLevel(IntOff);
 
     ASSERT(this == kernel->currentThread);
@@ -229,7 +231,7 @@ void Thread::Yield() {
 //	off the ready list, and switching to it.
 //----------------------------------------------------------------------
 void Thread::Sleep(bool finishing) {
-    Thread *nextThread;
+    Thread* nextThread;
 
     ASSERT(this == kernel->currentThread);
     ASSERT(kernel->interrupt->getLevel() == IntOff);
@@ -254,7 +256,7 @@ void Thread::Sleep(bool finishing) {
 
 static void ThreadFinish() { kernel->currentThread->Finish(); }
 static void ThreadBegin() { kernel->currentThread->Begin(); }
-void ThreadPrint(Thread *t) { t->Print(); }
+void ThreadPrint(Thread* t) { t->Print(); }
 
 #ifdef PARISC
 
@@ -264,13 +266,13 @@ void ThreadPrint(Thread *t) { t->Print(); }
 //	so we need to do the conversion.
 //----------------------------------------------------------------------
 
-static void *PLabelToAddr(void *plabel) {
+static void* PLabelToAddr(void* plabel) {
     int funcPtr = (int)plabel;
 
     if (funcPtr & 0x02) {
         // L-Field is set.  This is a PLT pointer
         funcPtr -= 2;  // Get rid of the L bit
-        return (*(void **)funcPtr);
+        return (*(void**)funcPtr);
     } else {
         // L-field not set.
         return plabel;
@@ -290,8 +292,8 @@ static void *PLabelToAddr(void *plabel) {
 //	"arg" is the parameter to be passed to the procedure
 //----------------------------------------------------------------------
 
-void Thread::StackAllocate(VoidFunctionPtr func, void *arg) {
-    stack = (int *)AllocBoundedArray(StackSize * sizeof(int));
+void Thread::StackAllocate(VoidFunctionPtr func, void* arg) {
+    stack = (int*)AllocBoundedArray(StackSize * sizeof(int));
 
 #ifdef PARISC
     // HP stack works from low addresses to high addresses
@@ -338,11 +340,11 @@ void Thread::StackAllocate(VoidFunctionPtr func, void *arg) {
     machineState[InitialArgState] = arg;
     machineState[WhenDonePCState] = PLabelToAddr(ThreadFinish);
 #else
-    machineState[PCState] = (void *)ThreadRoot;
-    machineState[StartupPCState] = (void *)ThreadBegin;
-    machineState[InitialPCState] = (void *)func;
-    machineState[InitialArgState] = (void *)arg;
-    machineState[WhenDonePCState] = (void *)ThreadFinish;
+    machineState[PCState] = (void*)ThreadRoot;
+    machineState[StartupPCState] = (void*)ThreadBegin;
+    machineState[InitialPCState] = (void*)func;
+    machineState[InitialArgState] = (void*)arg;
+    machineState[WhenDonePCState] = (void*)ThreadFinish;
 #endif
 }
 
@@ -403,9 +405,9 @@ static void SimpleThread(int which) {
 void Thread::SelfTest() {
     DEBUG(dbgThread, "Entering Thread::SelfTest");
 
-    Thread *t = new Thread("forked thread");
+    Thread* t = new Thread("forked thread");
 
-    t->Fork((VoidFunctionPtr)SimpleThread, (void *)1);
+    t->Fork((VoidFunctionPtr)SimpleThread, (void*)1);
     kernel->currentThread->Yield();
     SimpleThread(0);
 }

@@ -75,17 +75,20 @@ class Thread {
    private:
     // NOTE: DO NOT CHANGE the order of these first two members.
     // THEY MUST be in this position for SWITCH to work.
-    int *stackTop;                         // the current stack pointer
-    void *machineState[MachineStateSize];  // all registers except for stackTop
+    int* stackTop;                         // the current stack pointer
+    void* machineState[MachineStateSize];  // all registers except for stackTop
     bool has_dynamic_name;  // true if the thread name is dynamically allocated
 
    public:
-    Thread(char *debugName,
+    Thread(char* debugName, int priority = 0,
            bool _has_dynamic_name = false);  // initialize a Thread
     ~Thread();                               // deallocate a Thread
                                              // NOTE -- thread being deleted
                                              // must not be running when delete
                                              // is called
+
+    int priority;  // scheduling priority (higher number = higher priority)
+    int getPriority() { return priority; }
 
     int processID;
     int parrentID;
@@ -96,7 +99,7 @@ class Thread {
 
     // basic thread operations
 
-    void Fork(VoidFunctionPtr func, void *arg);
+    void Fork(VoidFunctionPtr func, void* arg);
     // Make thread run (*func)(arg)
     void Yield();                // Relinquish the CPU if any
                                  // other thread is runnable
@@ -107,20 +110,20 @@ class Thread {
 
     void CheckOverflow();  // Check if thread stack has overflowed
     void setStatus(ThreadStatus st) { status = st; }
-    char *getName() { return (name); }
+    char* getName() { return (name); }
     void Print() { cout << name; }
     void SelfTest();  // test whether thread impl is working
 
    private:
     // some of the private data for this class is listed above
 
-    int *stack;           // Bottom of the stack
+    int* stack;           // Bottom of the stack
                           // NULL if this is the main thread
                           // (If NULL, don't deallocate stack)
     ThreadStatus status;  // ready, running or blocked
-    char *name;
+    char* name;
 
-    void StackAllocate(VoidFunctionPtr func, void *arg);
+    void StackAllocate(VoidFunctionPtr func, void* arg);
     // Allocate a stack for thread.
     // Used internally by Fork()
 
@@ -134,11 +137,11 @@ class Thread {
     void SaveUserState();     // save user-level register state
     void RestoreUserState();  // restore user-level register state
 
-    AddrSpace *space;  // User code this thread is running.
+    AddrSpace* space;  // User code this thread is running.
 };
 
 // external function, dummy routine whose sole job is to call Thread::Print
-extern void ThreadPrint(Thread *thread);
+extern void ThreadPrint(Thread* thread);
 
 // Magical machine-dependent routines, defined in switch.s
 
@@ -150,7 +153,7 @@ extern "C" {
 void ThreadRoot();
 
 // Stop running oldThread and start running newThread
-void SWITCH(Thread *oldThread, Thread *newThread);
+void SWITCH(Thread* oldThread, Thread* newThread);
 }
 
 #endif  // THREAD_H

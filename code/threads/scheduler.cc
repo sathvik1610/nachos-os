@@ -24,13 +24,30 @@
 #include "main.h"
 
 //----------------------------------------------------------------------
+// ThreadPriorityCompare
+//	Comparator for the SortedList of ready threads.
+//	SortedList::RemoveFront() returns the "smallest" element, so we
+//	invert the usual order: a thread with HIGHER priority is
+//	considered "smaller" so it comes out first.
+//	  returns -1  if x should be dequeued BEFORE y  (x.priority > y.priority)
+//	  returns  1  if y should be dequeued before x
+//	  returns  0  if equal priority (FIFO order preserved within same priority)
+//----------------------------------------------------------------------
+
+static int ThreadPriorityCompare(Thread* x, Thread* y) {
+    if (x->getPriority() > y->getPriority()) return -1;
+    if (x->getPriority() < y->getPriority()) return 1;
+    return 0;
+}
+
+//----------------------------------------------------------------------
 // Scheduler::Scheduler
 // 	Initialize the list of ready but not running threads.
 //	Initially, no ready threads.
 //----------------------------------------------------------------------
 
 Scheduler::Scheduler() {
-    readyList = new List<Thread *>;
+    readyList = new SortedList<Thread*>(ThreadPriorityCompare);
     toBeDestroyed = NULL;
 }
 
@@ -49,12 +66,12 @@ Scheduler::~Scheduler() { delete readyList; }
 //	"thread" is the thread to be put on the ready list.
 //----------------------------------------------------------------------
 
-void Scheduler::ReadyToRun(Thread *thread) {
+void Scheduler::ReadyToRun(Thread* thread) {
     ASSERT(kernel->interrupt->getLevel() == IntOff);
     DEBUG(dbgThread, "Putting thread on ready list: " << thread->getName());
 
     thread->setStatus(READY);
-    readyList->Append(thread);
+    readyList->Insert(thread);  // inserted in priority order
 }
 
 //----------------------------------------------------------------------
@@ -65,7 +82,7 @@ void Scheduler::ReadyToRun(Thread *thread) {
 //	Thread is removed from the ready list.
 //----------------------------------------------------------------------
 
-Thread *Scheduler::FindNextToRun() {
+Thread* Scheduler::FindNextToRun() {
     ASSERT(kernel->interrupt->getLevel() == IntOff);
 
     if (readyList->IsEmpty()) {
@@ -92,8 +109,8 @@ Thread *Scheduler::FindNextToRun() {
 //		(when the next thread starts running)
 //----------------------------------------------------------------------
 
-void Scheduler::Run(Thread *nextThread, bool finishing) {
-    Thread *oldThread = kernel->currentThread;
+void Scheduler::Run(Thread* nextThread, bool finishing) {
+    Thread* oldThread = kernel->currentThread;
 
     ASSERT(kernel->interrupt->getLevel() == IntOff);
 
