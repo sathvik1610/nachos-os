@@ -165,6 +165,14 @@ void handle_SC_Absolute() {
     return move_program_counter();
 }
 
+void handle_SC_Sleep() {
+    int seconds = (int)kernel->machine->ReadRegister(4);
+    DEBUG(dbgSys, "Sleep " << seconds << " second(s)\n");
+    SysSleep(seconds);
+    DEBUG(dbgSys, "Sleep: thread woke up\n");
+    return move_program_counter();
+}
+
 void handle_SC_ReadNum() {
     int result = SysReadNum();
     kernel->machine->WriteRegister(2, result);
@@ -434,6 +442,8 @@ void ExceptionHandler(ExceptionType which) {
                     return handle_SC_Add();
                 case SC_Absolute:
                     return handle_SC_Absolute();
+                case SC_Sleep:
+                    return handle_SC_Sleep();
                 case SC_ReadNum:
                     return handle_SC_ReadNum();
                 case SC_PrintNum:

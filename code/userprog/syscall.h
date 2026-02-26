@@ -49,6 +49,7 @@
 #define SC_Signal 53
 #define SC_GetPid 54
 #define SC_Absolute 55
+#define SC_Sleep 56
 
 #ifndef IN_ASM
 
@@ -72,6 +73,8 @@ void Halt();
 int Add(int op1, int op2);
 
 int Absolute(int op);
+
+void Sleep(int seconds);
 
 int ReadNum();
 

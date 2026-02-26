@@ -173,3 +173,20 @@ To test the system call, you need to compile both the NachOS kernel and the user
    ```
 
 If everything was implemented correctly, NachOS will boot, load the test program into memory, execute the `Absolute(-42)` and `Absolute(100)` system calls, print `42` and `100` to the console, and then halt!
+
+
+
+Flow:
+C code calls Absolute(-42)
+    ↓
+start.S puts 55 in register $2, fires syscall instruction
+    ↓
+CPU switches to kernel mode → ExceptionHandler() in exception.cc
+    ↓
+Sees SC_Absolute (55) → calls handle_SC_Absolute()
+    ↓
+Reads -42 from register $4 → calls SysAbsolute(-42) → returns 42
+    ↓
+Writes 42 to register $2, advances Program Counter
+    ↓
+CPU returns to user mode → C program gets 42 back

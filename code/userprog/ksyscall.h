@@ -31,6 +31,13 @@ int SysAbsolute(int op) {
     return op;
 }
 
+void SysSleep(int seconds) {
+    // 1 second = 100 ticks in NachOS
+    // If seconds <= 0, return immediately
+    if (seconds <= 0) return;
+    kernel->alarm->WaitUntil(seconds * 100);
+}
+
 int SysReadNum() {
     readUntilBlank();
 
