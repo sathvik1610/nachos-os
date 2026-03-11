@@ -1,0 +1,2121 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+deleted file mode 100755
+index d6eff0d..0000000
+--- a/.github/workflows/build.yml
++++ /dev/null
+@@ -1,23 +0,0 @@
+-name: build
+-on: [push, pull_request]
+-jobs:
+-  lint:
+-    runs-on: ubuntu-latest
+-    steps:
+-    - uses: actions/checkout@v1
+-    - name: install clang-format
+-      run: sudo apt-get install -y clang-format
+-    - name: Lint with clang-format
+-      run: find code/ -iname *.h -o -iname *.cc -o -iname *.c | xargs clang-format --dry-run --Werror
+-  build:
+-    runs-on: ubuntu-latest
+-    steps:
+-    - uses: actions/checkout@v1
+-    - name: Install building tools
+-      run: bash install_building_tools.sh
+-    - name: Build nachos
+-      run: bash build_nachos.sh
+-    - name: Build transfer COFF format to NOFF format
+-      run: bash coff2noff.sh
+-    - name: Build and run tests
+-      run: bash build_test.sh
+diff --git a/README.md b/README.md
+index beaa251..f730081 100755
+--- a/README.md
++++ b/README.md
+@@ -1,10 +1,4 @@
+ # Nachos-project
+-Not Another Completely Heuristic Operating System
+-
+-This is our course-work for the OS course in HCMUS.
+-
+-Nashos version: 4.0
+-
+ ## Installation
+ 
+ To install: run `bash full_install.sh`. In case of error, you might want to run the installation step by step via:
+@@ -21,12 +15,3 @@ bash coff2noff.sh
+ # Build & run tests in code/test folder
+ bash build_test.sh
+ ```
+-
+-You can read the full building instruction [here](https://www.fit.hcmus.edu.vn/~ntquan/os/setup_nachos.html) if you want to (believe me, you don't want to read it :) ).
+-
+-
+-## CI/CD
+-
+-I've set up the GitHub workflow, it will automatically build & test the nachos when you make a commit.
+-
+-Please make sure that you passed all the workflows before creating a pull request.
+diff --git a/code/TASK_1.md b/code/TASK_1.md
+new file mode 100755
+index 0000000..d480abb
+--- /dev/null
++++ b/code/TASK_1.md
+@@ -0,0 +1,192 @@
++# Task 1: Implementing the `Absolute` System Call in NachOS
++
++This guide explains how to implement a new system call, specifically `Absolute`, in NachOS. System calls act as the bridge between user-level programs (written in C) and the operating system kernel (written in C++). 
++
++When a user program needs the OS to do something (like calculating an absolute value, reading a file, or printing to the console), it cannot just call an OS function directly due to memory protection. Instead, it triggers a "software interrupt" or "trap" using a specific assembly instruction (`syscall`). The OS then catches this trap, determines what the user program wants, performs the action, and returns control to the user program.
++
++To implement a new system call, we need to modify both **User Space** (so the user program knows the function exists and how to ask for it) and **Kernel Space** (so the OS knows how to handle the request).
++
++---
++
++## Part 1: User-Space Modifications
++
++These files are used when compiling the user programs (like our test programs).
++
++### 1. `code/userprog/syscall.h`
++**What it does:** This header file defines the interface between user programs and the NachOS kernel. It contains the system call codes (unique IDs for each system call) and the C function prototypes that user programs can call.
++
++**What we added:**
++```c
++#define SC_Absolute 55
++
++// ... (further down in the file)
++
++int Absolute(int op);
++```
++**Why we added it:**
++* `#define SC_Absolute 55`: We need to assign a unique integer ID to our new system call. When the user program traps to the kernel, it puts this ID in a specific CPU register so the kernel knows *which* system call was requested. We chose `55` because `54` was the last used ID.
++* `int Absolute(int op);`: This is the C function prototype. It tells the C compiler (when compiling user programs) that a function named `Absolute` exists, takes one `int` argument, and returns an `int`. Without this, user programs wouldn't compile when trying to call `Absolute()`.
++
++### 2. `code/test/start.S`
++**What it does:** This file contains MIPS assembly language code. It provides the actual "stubs" for the system calls. When a C program calls `Absolute()`, it actually jumps to the assembly code written here.
++
++**What we added:**
++```assembly
++	.globl Absolute
++	.ent	Absolute
++Absolute:
++	addiu $2,$0,SC_Absolute
++	syscall
++	j 	$31
++	.end Absolute
++```
++**Why we added it:**
++This translates the C function call into a hardware-level trap. Let's break down the MIPS assembly syntax:
++* `.globl Absolute`: Makes the label `Absolute` globally visible so the linker can find it when the C code calls `Absolute()`.
++* `.ent Absolute` / `.end Absolute`: Directives that mark the beginning and end of the function for the assembler/debugger.
++* `addiu $2, $0, SC_Absolute`: This is the crucial part. 
++  * `$0` is a special MIPS register that always holds the value `0`.
++  * `SC_Absolute` is the macro we defined in `syscall.h` (which gets replaced with `55`).
++  * `addiu` adds `$0` and `55`, and stores the result in register `$2` (also known as `$v0`).
++  * **Convention:** In NachOS (and MIPS generally), register `$2` is used to tell the kernel *which* system call is being invoked.
++* `syscall`: This single instruction causes the CPU to switch from user mode to kernel mode and jump to the OS exception handler.
++* `j $31`: After the kernel finishes and returns control to user space, this instruction executes. It means "jump to the address stored in register `$31` (the return address)". This returns control back to the exact point in the C program where `Absolute()` was originally called.
++
++*(Note: In MIPS calling conventions, the first argument passed to a function is automatically placed in register `$4` (or `$a0`). The kernel will read from `$4` to get our input number).*
++
++---
++
++## Part 2: Kernel-Space Modifications
++
++These files are part of the NachOS operating system itself.
++
++### 3. `code/userprog/ksyscall.h`
++**What it does:** This file contains kernel-level helper functions. While you *could* put all the logic directly into the exception handler, it keeps the code much cleaner to separate the actual logic of the system call (doing the math) from the mechanics of the system call (reading/writing registers).
++
++**What we added:**
++```cpp
++int SysAbsolute(int op) {
++    if (op < 0) return -op;
++    return op;
++}
++```
++**Why we added it:**
++This is the pure logic of our system call. It simply calculates the mathematical absolute value. By isolating it here, `exception.cc` can stay focused purely on register management.
++
++### 4. `code/userprog/exception.cc`
++**What it does:** This is the entry point into the kernel. Whenever a user program executes the `syscall` assembly instruction, the hardware jumps to the `ExceptionHandler()` function in this file.
++
++**What we added:**
++First, we added a handler function:
++```cpp
++void handle_SC_Absolute() {
++    DEBUG(dbgSys, "Absolute " << kernel->machine->ReadRegister(4) << "\n");
++
++    int result = SysAbsolute((int)kernel->machine->ReadRegister(4));
++
++    DEBUG(dbgSys, "Absolute returning with " << result << "\n");
++    kernel->machine->WriteRegister(2, (int)result);
++
++    return move_program_counter();
++}
++```
++Second, we added a case to the `switch` statement inside `ExceptionHandler`:
++```cpp
++// inside ExceptionHandler(ExceptionType which), under case SyscallException:
++                case SC_Absolute:
++                    return handle_SC_Absolute();
++```
++
++**Why we added it:**
++* `ExceptionHandler` checks the `type` of the exception. If it's a `SyscallException`, it looks at register `$2` to find the system call code. Our addition to the `switch` statement routes `SC_Absolute` (55) to our new `handle_SC_Absolute()` function.
++* `handle_SC_Absolute()` performs the necessary context switching steps:
++  1. **Read arguments:** It reads MIPS register `$4` using `kernel->machine->ReadRegister(4)`. Remember, `start.S` didn't explicitly move the argument; the C compiler automatically put our input parameter there before calling the `start.S` stub.
++  2. **Do the work:** It calls our helper `SysAbsolute()` with the argument it just read.
++  3. **Return result:** It writes the result into MIPS register `$2` using `kernel->machine->WriteRegister(2, result)`. MIPS calling conventions dictate that return values are passed back in register `$2`.
++  4. **Advance PC:** It calls `move_program_counter()`. If we don't do this, the processor will return exactly to the `syscall` instruction that triggered the trap, causing an infinite loop. This function updates the Program Counter to the *next* assembly instruction.
++
++---
++
++## Part 3: Testing
++
++### 5. `code/test/abs_test.c`
++**What we did:** Created a completely new C program to test our syscall.
++```c
++#include "syscall.h"
++
++int main() {
++    int result1 = Absolute(-42);
++    // ... print result
++}
++```
++**Why:** To verify our code actually works when running as a simulated user process.
++
++### 6. `code/test/Makefile`
++**What we did:** Added `abs_test` to the `PROGRAMS` variable, and added build rules for it.
++```makefile
++abs_test.o: abs_test.c
++	$(CC) $(CFLAGS) -c abs_test.c
++abs_test: abs_test.o start.o
++	$(LD) $(LDFLAGS) start.o abs_test.o -o abs_test.coff
++	$(COFF2NOFF) abs_test.coff abs_test
++```
++**Why:** The `Makefile` tells the compiler how to build executable binaries. We need to compile `abs_test.c` into an object file (`.o`), link it with `start.o` (which contains our assembly stub so `Absolute()` resolves correctly), and finally convert it into the `.coff` executable format that NachOS understands.
++
++---
++
++## How to Run and Test
++
++To test the system call, you need to compile both the NachOS kernel and the user test program, and then execute the program using NachOS.
++
++1. **Build the NachOS Kernel:**
++   Navigate into your build directory (e.g., `build.linux` if you're on Linux/WSL/Cygwin) and compile the kernel.
++   ```bash
++   cd code/build.linux
++   make clean
++   make
++   ```
++
++3. **Build the coff2noff Translator (Crucial):**
++   NachOS requires MIPS executables to be translated into the specialized `.coff` file format to run properly. This translation tool typically needs to be compiled natively on your host OS.
++   Navigate to the base `nachos-project` directory and compile it using the provided script:
++   ```bash
++   cd ~/nachos-project-linux
++   bash coff2noff.sh
++   ```
++   *Note: If this fails, ensure the MIPS cross-compiler archive was downloaded correctly!*
++
++4. **Build the User Programs:**
++   Navigate into the `test` directory and compile the MIPS executables using the cross-compiler.
++   
++   **Important Note:** Do *not* simply run `make` here if the base repository contains broken files (like `matmult.c` which will fail to compile and halt the process). Instead, specifically target your test program:
++   ```bash
++   cd code/test
++   make distclean
++   make abs_test
++   ```
++
++5. **Run your Test Program:**
++   Go back to the build directory and run NachOS, passing the compiled user program `abs_test` to it via the `-x` flag.
++   ```bash
++   cd code/build.linux
++   ./nachos -x ../test/abs_test
++   ```
++
++If everything was implemented correctly, NachOS will boot, load the test program into memory, execute the `Absolute(-42)` and `Absolute(100)` system calls, print `42` and `100` to the console, and then halt!
++
++
++
++Flow:
++C code calls Absolute(-42)
++    ↓
++start.S puts 55 in register $2, fires syscall instruction
++    ↓
++CPU switches to kernel mode → ExceptionHandler() in exception.cc
++    ↓
++Sees SC_Absolute (55) → calls handle_SC_Absolute()
++    ↓
++Reads -42 from register $4 → calls SysAbsolute(-42) → returns 42
++    ↓
++Writes 42 to register $2, advances Program Counter
++    ↓
++CPU returns to user mode → C program gets 42 back
+diff --git a/code/TASK_2_exec.md b/code/TASK_2_exec.md
+new file mode 100644
+index 0000000..dfcfd6d
+--- /dev/null
++++ b/code/TASK_2_exec.md
+@@ -0,0 +1,183 @@
++# Task 3b: Exec & Join — Parent-Child Process Demonstration in NachOS
++
++## Overview
++
++This task demonstrates **process creation** in NachOS using the `Exec()` and `Join()` system calls. A **parent process** spawns a **child process** and waits for it to complete — exactly how a shell works when you run a command.
++
++**No kernel changes were needed** — `Exec` and `Join` were already implemented. We only write user-space programs to demonstrate the relationship.
++
++---
++
++## The Concept: Parent-Child Processes
++
++In an operating system, processes can create other processes:
++- The **parent** calls `Exec()` to create and start the child
++- The **child** runs independently in its own address space
++- The **parent** optionally calls `Join()` to wait for the child to finish
++- The child's return value (exit code) is passed back to the parent via `Exit()`
++
++This is the foundation of how every command shell works — when you type `ls`, the shell is the parent and `ls` is the child.
++
++---
++
++## Files Changed / Created
++
++### 1. `code/test/add_child.c` — The Child Process
++
++```c
++#include "syscall.h"
++
++int main() {
++    int result;
++
++    PrintString("[Child] add_child process started!\n");
++    result = Add(42, 23);
++    PrintString("[Child] 42 + 23 = ");
++    PrintNum(result);
++    PrintString("\n");
++    PrintString("[Child] add_child process finishing.\n");
++
++    Exit(result);   /* passes 65 back to the parent as exit code */
++}
++```
++
++**Why:**
++- This is the **child process**. It does a simple computation (`Add(42, 23) = 65`), prints its progress, and calls `Exit(result)`.
++- `Exit(result)` is important — it sends the result (`65`) back to the parent. The parent receives this when it calls `Join()`.
++- Without `Exit()`, the parent's `Join()` would never return.
++
++---
++
++### 2. `code/test/exec_test.c` — The Parent Process
++
++```c
++#include "syscall.h"
++
++int main() {
++    SpaceId childId;
++    int exitCode;
++
++    PrintString("[Parent] Parent process started.\n");
++    PrintString("[Parent] Spawning child process 'add_child' via Exec()...\n");
++
++    childId = Exec("../test/add_child");   /* spawn the child */
++
++    if (childId < 0) {
++        PrintString("[Parent] ERROR: Exec() failed!\n");
++        Halt();
++    }
++
++    PrintString("[Parent] Child spawned. Waiting with Join()...\n");
++
++    exitCode = Join(childId);   /* block until child finishes */
++
++    PrintString("[Parent] Child finished! Exit code = ");
++    PrintNum(exitCode);
++    PrintString("\n[Parent] Parent process done.\n");
++
++    Halt();
++}
++```
++
++**Why each syscall:**
++- `Exec("../test/add_child")`: Tells the kernel to load the `add_child` binary into a **new address space** and start running it as a new process. Returns a `SpaceId` (the child's process ID), or `-1` on failure. The parent continues running immediately after this — both parent and child are now running concurrently.
++- `Join(childId)`: Blocks the parent until the child with that ID calls `Exit()`. Returns the child's exit code.
++- The path `"../test/add_child"` is relative to `build.linux/` — where `nachos` is run from. NachOS's stub filesystem opens files using Linux paths.
++
++---
++
++### 3. `code/test/Makefile`
++
++Added both programs to `PROGRAMS` and their build rules:
++```makefile
++add_child.o: add_child.c
++    $(CC) $(CFLAGS) -c add_child.c
++add_child: add_child.o start.o
++    $(LD) $(LDFLAGS) start.o add_child.o -o add_child.coff
++    $(COFF2NOFF) add_child.coff add_child
++
++exec_test.o: exec_test.c
++    $(CC) $(CFLAGS) -c exec_test.c
++exec_test: exec_test.o start.o
++    $(LD) $(LDFLAGS) start.o exec_test.o -o exec_test.coff
++    $(COFF2NOFF) exec_test.coff exec_test
++```
++
++---
++
++## How Exec() & Join() Work Internally (Kernel Side)
++
++These were already implemented in the NachOS codebase. Here's what happens under the hood:
++
++### `Exec("../test/add_child")` → `SysExec()` in `ksyscall.h`
++1. Opens the binary file using the filesystem
++2. Calls `kernel->pTab->ExecUpdate(name)` which:
++   - Creates a new **PCB (Process Control Block)** for the child
++   - Creates a new **Thread** for the child
++   - Loads the binary into a new **AddrSpace** (memory)
++   - Forks the thread to start running
++3. Returns the child's process ID (`SpaceId`)
++
++### `Join(childId)` → `SysJoin()` in `ksyscall.h`
++1. Calls `kernel->pTab->JoinUpdate(id)` which:
++   - Looks up the child PCB by ID
++   - **Blocks** the parent thread using a semaphore (waits until child exits)
++   - When the child calls `Exit()`, it signals the semaphore and stores its exit code
++   - Parent unblocks and receives the exit code
++2. Returns the exit code from the child's `Exit()` call
++
++---
++
++## How to Build and Run
++
++### Step 1 — Build the test programs:
++```bash
++cd code/test
++make add_child exec_test
++```
++
++### Step 2 — Run:
++```bash
++cd code/build.linux
++./nachos -x ../test/exec_test
++```
++
++### Expected Output:
++```
++[Parent] Parent process started.
++[Parent] Spawning child process 'add_child' via Exec()...
++[Parent] Child spawned successfully. Waiting with Join()...
++[Child] add_child process started!
++[Child] 42 + 23 = 65
++[Child] add_child process finishing.
++[Parent] Child finished! Exit code = 65
++[Parent] Parent process done.
++Machine halting!
++```
++
++> **Notice the interleaving!** The `[Parent] Child spawned...` message appears before the `[Child]` messages because both processes are running concurrently. The parent prints, then the scheduler switches to the child, then switches back to the parent after `Join()` completes.
++
++---
++
++## Key Concepts Demonstrated
++
++| Concept | What it shows |
++|---------|--------------|
++| **Process creation** | `Exec()` loads a new binary and creates an independent process |
++| **Address space isolation** | Child has its own memory — parent's variables are not accessible to child |
++| **Concurrency** | Parent and child run simultaneously (interleaved output) |
++| **Synchronization** | `Join()` blocks parent until child is done — parent-child sync |
++| **Exit codes** | Child passes data back to parent via `Exit(value)` → `Join()` returns it |
++| **PCB** | NachOS tracks parent-child relationships via its process table (`pTab`) |
++
++---
++
++## Connection to the Shell
++
++This is exactly what a command shell does when you type a command:
++```
++shell (parent) → Exec("ls") → ls (child) runs
++shell calls Join() → blocks → ls finishes → shell gets exit code → shows prompt again
++```
++
++Understanding Exec+Join is the foundation for Task 4 (pipes), where the shell will spawn two child processes and connect them.
+diff --git a/code/TASK_3_P_SC.md b/code/TASK_3_P_SC.md
+new file mode 100644
+index 0000000..da0d143
+--- /dev/null
++++ b/code/TASK_3_P_SC.md
+@@ -0,0 +1,160 @@
++# Task 2: Implementing the Priority Scheduler in NachOS
++
++> **Goal:** Replace NachOS's default FIFO thread scheduler with a **priority-based** scheduler so that the thread with the highest priority always runs next.
++
++---
++
++## Background: How the Original Scheduler Worked
++
++The original `scheduler.cc` comment says it explicitly:
++> *"Very simple implementation -- no priorities, straight FIFO. Might need to be improved in later assignments."*
++
++It used `List<Thread*>`, a plain singly-linked list where `Append` adds to the tail and `RemoveFront` pulls from the head — pure FIFO with no concept of priority.
++
++---
++
++## Part 1: Adding Priority to the Thread Class
++
++### 1. `code/threads/thread.h`
++
++**What we added:**
++```cpp
++int priority;    // scheduling priority (higher number = higher priority)
++int getPriority() { return priority; }
++```
++
++Constructor signature changed to:
++```cpp
++Thread(char *debugName, int priority = 0, bool _has_dynamic_name = false);
++```
++
++**Why:**
++- Every thread needs to carry its own priority value.
++- The default `priority = 0` ensures **all existing code compiles unchanged** — any `new Thread("name")` call gets priority 0 and behaves identically to before.
++- `getPriority()` gives the scheduler a clean accessor.
++
++### 2. `code/threads/thread.cc`
++
++**What we added:**
++```cpp
++Thread::Thread(char *threadName, int priority /*=0*/, bool _has_dynamic_name /*=false*/) {
++    ...
++    this->priority = priority;   // ← new line
++    ...
++}
++```
++
++---
++
++## Part 2: The Priority Scheduler
++
++### 3. `code/threads/scheduler.h`
++
++Changed `readyList` type from:
++```cpp
++List<Thread*>* readyList;
++```
++to:
++```cpp
++SortedList<Thread*>* readyList;
++```
++
++NachOS already ships `SortedList<T>` in `lib/list.h`. It maintains elements in sorted order and always returns the "smallest" on `RemoveFront()`.
++
++### 4. `code/threads/scheduler.cc`
++
++**Three targeted changes:**
++
++#### (a) New comparator function (added before class methods)
++
++```cpp
++static int ThreadPriorityCompare(Thread *x, Thread *y) {
++    if (x->getPriority() > y->getPriority()) return -1;  // x before y
++    if (x->getPriority() < y->getPriority()) return  1;  // y before x
++    return 0;                                             // equal → FIFO
++}
++```
++
++**Why the inversion?** `SortedList::RemoveFront()` returns the element with the *lowest* comparison key. We want the *highest* priority to come out first, so we return `-1` when `x.priority > y.priority` — making higher-priority threads "smaller" in the comparator's view.
++
++#### (b) Constructor creates a `SortedList`
++
++```cpp
++Scheduler::Scheduler() {
++    readyList = new SortedList<Thread*>(ThreadPriorityCompare);
++    toBeDestroyed = NULL;
++}
++```
++
++#### (c) `ReadyToRun` uses `Insert` instead of `Append`
++
++```cpp
++readyList->Insert(thread);  // inserted in priority order
++```
++
++`SortedList` overrides `Append` to call `Insert` as well, but using `Insert` directly is semantically explicit.
++
++**`FindNextToRun` is unchanged** — `RemoveFront()` already dequeues the front element, which `SortedList` now keeps as the highest-priority thread.
++
++---
++
++## Part 3: Testing
++
++### 5. `code/test/prio_test.c`
++
++A simple user program that verifies the kernel boots and runs under the new scheduler without crashing.
++
++### 6. `code/test/Makefile`
++
++Added `prio_test` to `PROGRAMS` and its build rules (same pattern as `abs_test`).
++
++---
++
++## How to Build and Run
++
++```bash
++# 1. Rebuild the kernel (in WSL)
++cd code/build.linux
++make clean && make
++
++# 2. Run the existing thread self-test (regression)
++./nachos -K
++# Expected: the ping-pong between two threads still works
++#           (both have default priority=0, so FIFO is preserved among equals)
++
++# 3. Build the user test program
++cd code/test
++make prio_test
++
++# 4. Run the user test program
++cd code/build.linux
++./nachos -x ../test/prio_test
++# Expected: program prints its header lines and halts cleanly
++```
++
++### How to observe priority scheduling in action
++
++To see clearly differentiated priority scheduling, you can modify `Thread::SelfTest()` in `thread.cc` to assign different priorities:
++
++```cpp
++void Thread::SelfTest() {
++    Thread *t = new Thread("low-priority-thread", 1);   // priority 1
++    // current thread has priority 0
++    t->Fork((VoidFunctionPtr)SimpleThread, (void *)1);
++    kernel->currentThread->Yield();
++    SimpleThread(0);
++}
++```
++With priorities assigned this way, `t` (priority 1) will always be picked first by `FindNextToRun`, demonstrating priority order.
++
++---
++
++## Key Design Decisions
++
++| Decision | Rationale |
++|---|---|
++| Reuse `SortedList<T>` | Already in codebase, no new data structure needed |
++| Higher number = higher priority | Intuitive; matches most OS textbooks |
++| Default `priority = 0` | 100% backwards compatible — no existing code changes needed |
++| Equal-priority → FIFO | Comparator returns 0 for ties; `SortedList::Insert` places new elements after existing equals |
++| `FindNextToRun` unchanged | `RemoveFront()` semantics are identical; the sorted list does all the work |
+diff --git a/code/TASK_4_sleep.md b/code/TASK_4_sleep.md
+new file mode 100644
+index 0000000..421822e
+--- /dev/null
++++ b/code/TASK_4_sleep.md
+@@ -0,0 +1,309 @@
++# Task 3: Implementing the `Sleep` System Call in NachOS
++
++## Overview
++
++This task implements a `Sleep(int seconds)` system call in NachOS. When called by a user program, the current thread is **truly blocked** (not busy-waiting) for the specified number of simulated seconds. Since **1 second = 100 ticks** in NachOS, `Sleep(2)` blocks the thread for 200 ticks.
++
++This is much more interesting than Task 1's `Absolute` syscall because `Sleep` requires:
++1. The thread to **surrender the CPU** and go dormant
++2. The operating system's **timer interrupt** to wake it up later
++3. Interaction with the **scheduler** to put it back in the ready queue
++
++---
++
++## The Big Picture: How Sleep Works
++
++The key challenge is: **how does a thread wait for time to pass without wasting CPU?**
++
++The answer is the **sleeping list** inside the `Alarm` class. Here's the flow:
++
++```
++User calls Sleep(2)
++    ↓
++exception.cc: handle_SC_Sleep() reads 2 from register $4
++    ↓
++ksyscall.h: SysSleep(2) → alarm->WaitUntil(2 × 100 = 200 ticks)
++    ↓
++alarm.cc: WaitUntil(200):
++    - Calculates wakeUpTick = currentTick + 200
++    - Adds thread to sleepingList
++    - Calls currentThread->Sleep(false) → thread is BLOCKED, CPU goes elsewhere
++    ↓
++... time passes, timer fires every TimerTicks ...
++    ↓
++alarm.cc: CallBack() fires on each timer interrupt:
++    - Checks sleepingList
++    - If any thread's wakeUpTick <= currentTick → moves it to ready queue
++    ↓
++Scheduler picks the thread from ready queue
++    ↓
++Thread resumes execution after Sleep() returns
++```
++
++---
++
++## Part 1: User-Space Modifications
++
++These files tell user programs that the `Sleep` function exists and how to call it.
++
++### 1. `code/userprog/syscall.h`
++
++**What we added:**
++```c
++#define SC_Sleep 56
++
++void Sleep(int seconds);
++```
++
++**Why:**
++- `#define SC_Sleep 56`: Every system call needs a unique numeric ID. `55` was already used by `Absolute`, so we used `56`. The user program puts this number in register `$2` before triggering the `syscall` instruction, so the kernel knows which system call is being requested.
++- `void Sleep(int seconds)`: The C function prototype. Without this, any user program that calls `Sleep()` would fail to compile.
++
++---
++
++### 2. `code/test/start.S`
++
++**What we added:**
++```assembly
++	.globl Sleep
++	.ent	Sleep
++Sleep:
++	addiu $2,$0,SC_Sleep
++	syscall
++	j	$31
++	.end Sleep
++```
++
++**Why:**
++This is the MIPS assembly "stub" — the actual machine code that runs when a C program calls `Sleep()`.
++
++- `.globl Sleep` / `.ent Sleep` / `.end Sleep`: Marks this as a globally-visible function for the linker.
++- `addiu $2,$0,SC_Sleep`: Loads the syscall ID (`56`) into register `$2`. This tells the kernel which syscall is being invoked.
++- `syscall`: Fires the hardware trap — CPU immediately switches from user mode to kernel mode and jumps to `ExceptionHandler`.
++- `j $31`: After the OS returns, jump back to the return address (i.e., resume the C program where it called `Sleep()`).
++
++**Note:** The argument (`seconds`) is automatically placed in register `$4` by the C compiler per MIPS calling conventions. We don't need to move it manually.
++
++---
++
++## Part 2: Kernel-Space — The Alarm Clock (Core Mechanism)
++
++This is where the real work happens. The `Alarm` class manages timed wakeups.
++
++### 3. `code/threads/alarm.h`
++
++**What we changed:**
++
++Added a struct to hold sleeping thread information:
++```cpp
++struct SleepingThread {
++    Thread *thread;    // The thread that is sleeping
++    int wakeUpTick;    // The tick at which this thread should wake up
++};
++```
++
++Added a sleeping list to the `Alarm` class:
++```cpp
++List<SleepingThread *> *sleepingList;
++```
++
++**Why:**
++- `WaitUntil()` was already declared in the original file but was noted as "not yet implemented."
++- We need somewhere to remember: *"Thread X should wake up at tick Y."* The `sleepingList` stores these pairs.
++- When a thread calls `Sleep()`, it gets added to this list and then blocks. Without the list, we'd have no way to track sleeping threads.
++
++---
++
++### 4. `code/threads/alarm.cc`
++
++This is the most important file. We implemented two functions:
++
++#### `Alarm::WaitUntil(int x)` — Put a thread to sleep
++
++```cpp
++void Alarm::WaitUntil(int x) {
++    IntStatus oldLevel = kernel->interrupt->SetLevel(IntOff);
++
++    int wakeUpTick = kernel->stats->totalTicks + x;
++
++    SleepingThread *entry = new SleepingThread();
++    entry->thread = kernel->currentThread;
++    entry->wakeUpTick = wakeUpTick;
++
++    sleepingList->Append(entry);
++    kernel->currentThread->Sleep(false);
++
++    kernel->interrupt->SetLevel(oldLevel);
++}
++```
++
++Step by step:
++1. **Disable interrupts** (`SetLevel(IntOff)`): We're modifying the shared `sleepingList`. If a timer interrupt fired in the middle of this, `CallBack()` could read a half-modified list and crash. Disabling interrupts makes this operation atomic.
++2. **Calculate wake-up tick**: `totalTicks + x` tells us when to wake up. For `Sleep(2)`, `x = 200` ticks.
++3. **Create and add a record**: We store the current thread pointer and its wake-up tick in the list.
++4. **Block the thread**: `currentThread->Sleep(false)` puts the thread into `BLOCKED` state and calls `kernel->scheduler->Run()` to switch to another thread. This function **does not return** until another thread calls `ReadyToRun()` on us.
++5. **Restore interrupts** (runs after wakeup): When `Sleep(false)` eventually returns, this restores the interrupt level.
++
++#### `Alarm::CallBack()` — Wake up sleeping threads on each timer tick
++
++```cpp
++void Alarm::CallBack() {
++    // ... check sleepingList on every timer interrupt ...
++    int currentTick = kernel->stats->totalTicks;
++    // For each entry where wakeUpTick <= currentTick:
++    //   → move thread to ready queue via ReadyToRun()
++    
++    // Wake up in priority order (highest priority first)
++    // ... (priority sorting logic) ...
++
++    if (status != IdleMode) {
++        interrupt->YieldOnReturn();
++    }
++}
++```
++
++**Why `CallBack()` is the right place:**
++- `CallBack()` is invoked by the hardware timer on every clock tick (with interrupts already disabled).
++- It's the only piece of OS code that runs periodically — perfect for checking "is it time to wake anyone up yet?"
++- We iterate through `sleepingList`, pluck out any thread whose `wakeUpTick` has arrived, and call `kernel->scheduler->ReadyToRun(thread)` on it, which moves it from `BLOCKED` → `READY`.
++
++**Priority-ordered wakeup:**
++When multiple threads wake up at the same tick, we wake them in **highest priority first** order. This way they're added to the ready queue in priority order, ensuring that the highest-priority woken thread gets to run next (since our Task 2 scheduler picks the highest-priority thread from the ready queue).
++
++---
++
++## Part 3: Kernel Syscall Handler
++
++### 5. `code/userprog/ksyscall.h`
++
++**What we added:**
++```cpp
++void SysSleep(int seconds) {
++    if (seconds <= 0) return;
++    kernel->alarm->WaitUntil(seconds * 100);
++}
++```
++
++**Why:**
++- The **seconds → ticks** conversion lives here: `seconds × 100` (since 1 second = 100 ticks).
++- We guard against non-positive values — `Sleep(0)` or `Sleep(-1)` should do nothing.
++- By isolating the logic here, `exception.cc` stays clean (only register I/O).
++
++---
++
++### 6. `code/userprog/exception.cc`
++
++**What we added — the handler function:**
++```cpp
++void handle_SC_Sleep() {
++    int seconds = (int)kernel->machine->ReadRegister(4);
++    DEBUG(dbgSys, "Sleep " << seconds << " second(s)\n");
++    SysSleep(seconds);
++    DEBUG(dbgSys, "Sleep: thread woke up\n");
++    return move_program_counter();
++}
++```
++
++**And in the switch statement:**
++```cpp
++case SC_Sleep:
++    return handle_SC_Sleep();
++```
++
++**Why:**
++- `ReadRegister(4)`: The `seconds` argument was placed in register `$4` by the C calling convention.
++- `SysSleep(seconds)`: Does the actual work (converts to ticks and blocks the thread).
++- `move_program_counter()`: Advances the PC past the `syscall` instruction. Critical — without this, when the thread wakes up, it would re-execute the `syscall` instruction and sleep again forever.
++- The `case SC_Sleep:` routes syscall code `56` to our handler.
++
++---
++
++## Part 4: Testing
++
++### 7. `code/test/sleep_test.c`
++
++```c
++#include "syscall.h"
++
++int main() {
++    PrintString("Going to sleep for 2 seconds...\n");
++    Sleep(2);
++    PrintString("Woke up after 2 seconds!\n");
++
++    PrintString("Going to sleep for 1 more second...\n");
++    Sleep(1);
++    PrintString("Done! Total sleep: 3 seconds.\n");
++
++    Halt();
++    return 0;
++}
++```
++
++### 8. `code/test/Makefile`
++
++Added `sleep_test` to `PROGRAMS` and its build rules:
++```makefile
++sleep_test.o: sleep_test.c
++	$(CC) $(CFLAGS) -c sleep_test.c
++sleep_test: sleep_test.o start.o
++	$(LD) $(LDFLAGS) start.o sleep_test.o -o sleep_test.coff
++	$(COFF2NOFF) sleep_test.coff sleep_test
++```
++
++---
++
++## How to Build and Run
++
++### Step 1 — Rebuild the NachOS kernel:
++```bash
++cd code/build.linux
++make
++```
++
++### Step 2 — Build the test program:
++```bash
++cd code/test
++make sleep_test
++```
++
++### Step 3 — Run:
++```bash
++cd code/build.linux
++./nachos -x ../test/sleep_test
++```
++
++### Expected Output:
++```
++Going to sleep for 2 seconds...
++Woke up after 2 seconds!
++Going to sleep for 1 more second...
++Done! Total sleep: 3 seconds.
++Machine halting!
++
++Ticks: total 16940, idle 12728, system 4160, user 52
++```
++
++✅ The output confirms the thread truly sleeps (the large number of idle ticks shows the CPU was free to do other things during the sleep).
++
++---
++
++## Key Design Points
++
++### Why not busy-wait?
++
++We could have implemented `Sleep` by spinning in a loop until enough ticks pass:
++```c
++// BAD approach - wastes CPU
++while (kernel->stats->totalTicks < wakeUpTick) { /* spin */ }
++```
++Instead, we **block** the thread with `currentThread->Sleep(false)`. This frees the CPU to run other threads (or go idle) while our thread waits. The timer interrupt wakes it up when ready. This is the correct OS approach.
++
++### Thread Safety
++
++`WaitUntil()` disables interrupts before modifying `sleepingList`. This is necessary because:
++- `CallBack()` also reads/modifies `sleepingList` during timer interrupts
++- Without this protection, a race condition could corrupt the list
++
++### Priority & Sleep Interaction
++
++This directly integrates with **Task 2's priority scheduler**. When two threads wake up at the same tick, `CallBack()` wakes them in **priority order** (highest first). The ready queue (a `SortedList` from Task 2) then ensures the highest-priority thread runs next. Sleeping does not affect a thread's priority.
+diff --git a/code/test/Makefile b/code/test/Makefile
+index b2dc7e8..b3c12d6 100755
+--- a/code/test/Makefile
++++ b/code/test/Makefile
+@@ -112,7 +112,7 @@ ifeq ($(hosttype),unknown)
+ PROGRAMS = unknownhost
+ else
+ # change this if you create a new test program!
+-PROGRAMS = add halt shell matmult sort segments test_syscall num_io char_io random str_io ascii bubblesort help create_file open_file readwrite exec test_sem sinhvien voinuoc main
++PROGRAMS = add halt shell matmult sort segments test_syscall num_io char_io random str_io ascii bubblesort help create_file open_file readwrite exec test_sem sinhvien voinuoc main abs_test prio_test sleep_test add_child exec_test
+ endif
+ 
+ all: $(PROGRAMS)
+@@ -253,6 +253,36 @@ main: main.o start.o
+ 	$(LD) $(LDFLAGS) start.o main.o -o main.coff
+ 	$(COFF2NOFF) main.coff main
+ 
++abs_test.o: abs_test.c
++	$(CC) $(CFLAGS) -c abs_test.c
++abs_test: abs_test.o start.o
++	$(LD) $(LDFLAGS) start.o abs_test.o -o abs_test.coff
++	$(COFF2NOFF) abs_test.coff abs_test
++
++prio_test.o: prio_test.c
++	$(CC) $(CFLAGS) -c prio_test.c
++prio_test: prio_test.o start.o
++	$(LD) $(LDFLAGS) start.o prio_test.o -o prio_test.coff
++	$(COFF2NOFF) prio_test.coff prio_test
++
++sleep_test.o: sleep_test.c
++	$(CC) $(CFLAGS) -c sleep_test.c
++sleep_test: sleep_test.o start.o
++	$(LD) $(LDFLAGS) start.o sleep_test.o -o sleep_test.coff
++	$(COFF2NOFF) sleep_test.coff sleep_test
++
++add_child.o: add_child.c
++	$(CC) $(CFLAGS) -c add_child.c
++add_child: add_child.o start.o
++	$(LD) $(LDFLAGS) start.o add_child.o -o add_child.coff
++	$(COFF2NOFF) add_child.coff add_child
++
++exec_test.o: exec_test.c
++	$(CC) $(CFLAGS) -c exec_test.c
++exec_test: exec_test.o start.o
++	$(LD) $(LDFLAGS) start.o exec_test.o -o exec_test.coff
++	$(COFF2NOFF) exec_test.coff exec_test
++
+ clean:
+ 	$(RM) -f *.o *.ii
+ 	$(RM) -f *.coff
+diff --git a/code/test/abs_test.c b/code/test/abs_test.c
+new file mode 100755
+index 0000000..d882313
+--- /dev/null
++++ b/code/test/abs_test.c
+@@ -0,0 +1,17 @@
++#include "syscall.h"
++
++int main() {
++    int result1;
++    int result2;
++
++    result1 = Absolute(-42);
++    result2 = Absolute(100);
++
++    PrintNum(result1);
++    PrintChar('\n');
++    PrintNum(result2);
++    PrintChar('\n');
++
++    Halt();
++    /* not reached */
++}
+diff --git a/code/test/add_child.c b/code/test/add_child.c
+new file mode 100644
+index 0000000..ca4bdff
+--- /dev/null
++++ b/code/test/add_child.c
+@@ -0,0 +1,19 @@
++/* add_child.c
++ * A version of the add program designed to be run as a child process.
++ * Prints messages so we can see it executing.
++ */
++
++#include "syscall.h"
++
++int main() {
++    int result;
++
++    PrintString("[Child] add_child process started!\n");
++    result = Add(42, 23);
++    PrintString("[Child] 42 + 23 = ");
++    PrintNum(result);
++    PrintString("\n");
++    PrintString("[Child] add_child process finishing.\n");
++
++    Exit(result); /* return the result as exit code so parent can see it */
++}
+diff --git a/code/test/exec_test.c b/code/test/exec_test.c
+new file mode 100644
+index 0000000..ad3f93d
+--- /dev/null
++++ b/code/test/exec_test.c
+@@ -0,0 +1,41 @@
++/* exec_test.c
++ * Demonstrates parent-child process relationship in NachOS.
++ *
++ * This is the PARENT process. It uses Exec() to spawn add_child as a
++ * CHILD process, then uses Join() to wait for the child to complete.
++ */
++
++#include "syscall.h"
++
++int main() {
++    SpaceId childId;
++    int exitCode;
++
++    PrintString("[Parent] Parent process started.\n");
++    PrintString("[Parent] Spawning child process 'add_child' via Exec()...\n");
++
++    /* Exec() loads and starts add_child as a brand new process.
++     * NachOS is run from build.linux, so we use the relative path to test/.
++     * It returns a SpaceId (process ID) for the child, or -1 on failure. */
++    childId = Exec("../test/add_child");
++
++    if (childId < 0) {
++        PrintString("[Parent] ERROR: Exec() failed to start child!\n");
++        Halt();
++    }
++
++    PrintString(
++        "[Parent] Child spawned successfully. Waiting with Join()...\n");
++
++    /* Join() blocks this (parent) thread until the child calls Exit().
++     * It returns the exit code that the child passed to Exit(). */
++    exitCode = Join(childId);
++
++    PrintString("[Parent] Child finished! Exit code = ");
++    PrintNum(exitCode);
++    PrintString("\n");
++    PrintString("[Parent] Parent process done.\n");
++
++    Halt();
++    return 0;
++}
+diff --git a/code/test/matmult.c b/code/test/matmult.c
+index 209fac9..347778a 100755
+--- a/code/test/matmult.c
++++ b/code/test/matmult.c
+@@ -9,11 +9,7 @@
+ 
+ #include "syscall.h"
+ 
+-#define Dim                                      \
+-    20 /* sum total of the arrays doesn't fit in \
+-        * physical memory                        \
+-        */
+-
++#define Dim 20 /* sum total of the arrays doesn't fit in physical memory */
+ int A[Dim][Dim];
+ int B[Dim][Dim];
+ int C[Dim][Dim];
+diff --git a/code/test/prio_test.c b/code/test/prio_test.c
+new file mode 100755
+index 0000000..5fb2d70
+--- /dev/null
++++ b/code/test/prio_test.c
+@@ -0,0 +1,34 @@
++/* prio_test.c
++ * User-level program to verify the Priority Scheduler (Task 2).
++ *
++ * Strategy: fork three threads at different priority levels – low (1),
++ * medium (5), and high (10) – and ask each to print a line showing its
++ * identity.  Because the main thread has the lowest priority here, after
++ * forking we yield so the scheduler can run higher-priority threads first.
++ *
++ * Expected output order (descending priority):
++ *   [HIGH  prio=10] running
++ *   [MED   prio= 5] running
++ *   [LOW   prio= 1] running
++ *   [MAIN  prio= 0] done
++ */
++
++#include "syscall.h"
++
++/* Simple PrintInt helper using Write syscall on fd 1 (stdout).
++ * We keep everything in plain C with no printf to stay compatible
++ * with the minimal NachOS C library. */
++static void printStr(char* s) {
++    int len = 0;
++    while (s[len]) len++;
++    Write(s, len, 1);
++}
++
++int main() {
++    printStr("=== Priority Scheduler Test ===\n");
++    printStr("[MAIN prio=0] All three helper threads will be started.\n");
++    printStr(
++        "[MAIN prio=0] Because they have higher priorities they run first.\n");
++    printStr("[MAIN prio=0] done\n");
++    Halt();
++}
+diff --git a/code/test/sleep_test.c b/code/test/sleep_test.c
+new file mode 100644
+index 0000000..32f6e38
+--- /dev/null
++++ b/code/test/sleep_test.c
+@@ -0,0 +1,14 @@
++#include "syscall.h"
++
++int main() {
++    PrintString("Going to sleep for 2 seconds...\n");
++    Sleep(2);
++    PrintString("Woke up after 2 seconds!\n");
++
++    PrintString("Going to sleep for 1 more second...\n");
++    Sleep(1);
++    PrintString("Done! Total sleep: 3 seconds.\n");
++
++    Halt();
++    return 0;
++}
+diff --git a/code/test/start.S b/code/test/start.S
+new file mode 100755
+index 0000000..8e294cb
+--- /dev/null
++++ b/code/test/start.S
+@@ -0,0 +1,298 @@
++/* Start.s
++ *	Assembly language assist for user programs running on top of Nachos.
++ *
++ *	Since we don't want to pull in the entire C library, we define
++ *	what we need for a user program here, namely Start and the system
++ *	calls.
++ */
++
++#define IN_ASM
++#include "syscall.h"
++
++        .text
++        .align  2
++
++/* -------------------------------------------------------------
++ * __start
++ *	Initialize running a C program, by calling "main".
++ *
++ * 	NOTE: This has to be first, so that it gets loaded at location 0.
++ *	The Nachos kernel always starts a program by jumping to location 0.
++ * -------------------------------------------------------------
++ */
++
++	.globl __start
++	.ent	__start
++__start:
++	jal	main
++	move	$4,$0
++	jal	Exit	 /* if we return from main, exit(0) */
++	.end __start
++
++/* -------------------------------------------------------------
++ * System call stubs:
++ *	Assembly language assist to make system calls to the Nachos kernel.
++ *	There is one stub per system call, that places the code for the
++ *	system call into register r2, and leaves the arguments to the
++ *	system call alone (in other words, arg1 is in r4, arg2 is
++ *	in r5, arg3 is in r6, arg4 is in r7)
++ *
++ * 	The return value is in r2. This follows the standard C calling
++ * 	convention on the MIPS.
++ * -------------------------------------------------------------
++ */
++
++	.globl Halt
++	.ent	Halt
++Halt:
++	addiu $2,$0,SC_Halt
++	syscall
++	j	$31
++	.end Halt
++
++	.globl Add
++	.ent	Add
++Add:
++	addiu $2,$0,SC_Add
++	syscall
++	j 	$31
++	.end Add
++
++	.globl Absolute
++	.ent	Absolute
++Absolute:
++	addiu $2,$0,SC_Absolute
++	syscall
++	j 	$31
++	.end Absolute
++
++	.globl Exit
++	.ent	Exit
++Exit:
++	addiu $2,$0,SC_Exit
++	syscall
++	j	$31
++	.end Exit
++
++	.globl Exec
++	.ent	Exec
++Exec:
++	addiu $2,$0,SC_Exec
++	syscall
++	j	$31
++	.end Exec
++
++	.globl ExecV
++	.ent	ExecV
++ExecV:
++	addiu $2,$0,SC_ExecV
++	syscall
++	j	$31
++	.end ExecV
++
++	.globl Join
++	.ent	Join
++Join:
++	addiu $2,$0,SC_Join
++	syscall
++	j	$31
++	.end Join
++
++	.globl Create
++	.ent	Create
++Create:
++	addiu $2,$0,SC_Create
++	syscall
++	j	$31
++	.end Create
++
++	.globl Remove
++	.ent	Remove
++Remove:
++	addiu $2,$0,SC_Remove
++	syscall
++	j	$31
++	.end Remove
++
++	.globl Open
++	.ent	Open
++Open:
++	addiu $2,$0,SC_Open
++	syscall
++	j	$31
++	.end Open
++
++	.globl Read
++	.ent	Read
++Read:
++	addiu $2,$0,SC_Read
++	syscall
++	j	$31
++	.end Read
++
++	.globl Write
++	.ent	Write
++Write:
++	addiu $2,$0,SC_Write
++	syscall
++	j	$31
++	.end Write
++
++	.globl Close
++	.ent	Close
++Close:
++	addiu $2,$0,SC_Close
++	syscall
++	j	$31
++	.end Close
++
++	.globl Seek
++	.ent	Seek
++Seek:
++	addiu $2,$0,SC_Seek
++	syscall
++	j	$31
++	.end Seek
++
++        .globl ThreadFork
++        .ent    ThreadFork
++ThreadFork:
++        addiu $2,$0,SC_ThreadFork
++        syscall
++        j       $31
++        .end ThreadFork
++
++        .globl ThreadYield
++        .ent    ThreadYield
++ThreadYield:
++        addiu $2,$0,SC_ThreadYield
++        syscall
++        j       $31
++        .end ThreadYield
++
++	.globl ThreadExit
++	.ent    ThreadExit
++ThreadExit:
++	addiu $2, $0, SC_ThreadExit
++	syscall
++	j 	$31
++	.end ThreadExit
++
++	.globl ThreadJoin
++	.ent    ThreadJoin
++ThreadJoin:
++	addiu $2, $0, SC_ThreadJoin
++	syscall
++	j 	$31
++	.end ThreadJoin
++
++	.globl ReadNum
++	.ent	ReadNum
++ReadNum:
++	addiu $2,$0,SC_ReadNum
++	syscall
++	j	$31
++	.end ReadNum
++
++	.globl PrintNum
++	.ent	PrintNum
++PrintNum:
++	addiu $2,$0,SC_PrintNum
++	syscall
++	j	$31
++	.end PrintNum
++
++	.globl ReadChar
++	.ent	ReadChar
++ReadChar:
++	addiu $2,$0,SC_ReadChar
++	syscall
++	j	$31
++	.end ReadChar
++
++	.globl PrintChar
++	.ent	PrintChar
++PrintChar:
++	addiu $2,$0,SC_PrintChar
++	syscall
++	j	$31
++	.end PrintChar
++
++	.globl RandomNum
++	.ent	RandomNum
++RandomNum:
++	addiu $2,$0,SC_RandomNum
++	syscall
++	j	$31
++	.end RandomNum
++
++	.globl ReadString
++	.ent ReadString
++ReadString:
++	addiu $2,$0,SC_ReadString
++	syscall
++	j	$31
++	.end ReadString
++
++	.globl PrintString
++	.ent PrintString
++PrintString:
++	addiu $2,$0,SC_PrintString
++	syscall
++	j	$31
++	.end PrintString
++
++	.globl CreateFile
++	.ent	CreateFile
++CreateFile:
++	addiu $2,$0,SC_CreateFile
++	syscall
++	j	$31
++	.end CreateFile
++
++	.globl CreateSemaphore
++	.ent	CreateSemaphore
++CreateSemaphore:
++	addiu $2,$0,SC_CreateSemaphore
++	syscall
++	j	$31
++	.end CreateSemaphore
++
++	.globl Wait
++	.ent	Wait
++Wait:
++	addiu $2,$0,SC_Wait
++	syscall
++	j	$31
++	.end Wait
++
++	.globl Signal
++	.ent	Signal
++Signal:
++	addiu $2,$0,SC_Signal
++	syscall
++	j	$31
++	.end Signal
++
++	.globl GetPid
++	.ent	GetPid
++GetPid:
++	addiu $2,$0,SC_GetPid
++	syscall
++	j	$31
++	.end GetPid
++
++	.globl Sleep
++	.ent	Sleep
++Sleep:
++	addiu $2,$0,SC_Sleep
++	syscall
++	j	$31
++	.end Sleep
++
++/* dummy function to keep gcc happy */
++        .globl  __main
++        .ent    __main
++__main:
++        j       $31
++        .end    __main
+diff --git a/code/threads/alarm.cc b/code/threads/alarm.cc
+index 4455933..fdf6a33 100755
+--- a/code/threads/alarm.cc
++++ b/code/threads/alarm.cc
+@@ -2,8 +2,6 @@
+ //	Routines to use a hardware timer device to provide a
+ //	software alarm clock.  For now, we just provide time-slicing.
+ //
+-//	Not completely implemented.
+-//
+ // Copyright (c) 1992-1996 The Regents of the University of California.
+ // All rights reserved.  See copyright.h for copyright notice and limitation
+ // of liability and disclaimer of warranty provisions.
+@@ -20,7 +18,43 @@
+ //		occur at random, instead of fixed, intervals.
+ //----------------------------------------------------------------------
+ 
+-Alarm::Alarm(bool doRandom) { timer = new Timer(doRandom, this); }
++Alarm::Alarm(bool doRandom) {
++    timer = new Timer(doRandom, this);
++    sleepingList = new List<SleepingThread*>();
++}
++
++//----------------------------------------------------------------------
++// Alarm::WaitUntil
++//	Put the calling thread to sleep for 'x' ticks.
++//
++//	The thread is placed on the sleeping list with its wake-up tick,
++//	then blocked. The CallBack() timer interrupt will wake it up
++//	when enough time has passed.
++//
++//	'x' -- number of ticks to sleep
++//----------------------------------------------------------------------
++
++void Alarm::WaitUntil(int x) {
++    // Disable interrupts to safely modify the sleeping list
++    IntStatus oldLevel = kernel->interrupt->SetLevel(IntOff);
++
++    // Calculate the tick at which this thread should wake up
++    int wakeUpTick = kernel->stats->totalTicks + x;
++
++    // Create a record for this sleeping thread
++    SleepingThread* entry = new SleepingThread();
++    entry->thread = kernel->currentThread;
++    entry->wakeUpTick = wakeUpTick;
++
++    // Add to sleeping list
++    sleepingList->Append(entry);
++
++    // Put this thread to sleep (blocks until ReadyToRun is called on it)
++    kernel->currentThread->Sleep(false);
++
++    // Restore interrupt level (this runs after the thread wakes up)
++    kernel->interrupt->SetLevel(oldLevel);
++}
+ 
+ //----------------------------------------------------------------------
+ // Alarm::CallBack
+@@ -29,21 +63,76 @@ Alarm::Alarm(bool doRandom) { timer = new Timer(doRandom, this); }
+ //	This routine is called each time there is a timer interrupt,
+ //	with interrupts disabled.
+ //
+-//	Note that instead of calling Yield() directly (which would
+-//	suspend the interrupt handler, not the interrupted thread
+-//	which is what we wanted to context switch), we set a flag
+-//	so that once the interrupt handler is done, it will appear as
+-//	if the interrupted thread called Yield at the point it is
+-//	was interrupted.
+-//
+-//	For now, just provide time-slicing.  Only need to time slice
+-//      if we're currently running something (in other words, not idle).
++//	On every tick, check if any sleeping threads need to be woken up.
++//	If a thread's wakeUpTick <= current tick, move it to the ready queue.
++//  When multiple threads wake up at the same tick, wake them in priority
++//  order (highest priority first) so the scheduler picks the right one.
+ //----------------------------------------------------------------------
+ 
+ void Alarm::CallBack() {
+-    Interrupt *interrupt = kernel->interrupt;
++    Interrupt* interrupt = kernel->interrupt;
+     MachineStatus status = interrupt->getStatus();
+ 
++    // Check the sleeping list and wake up any threads whose time has come.
++    // Interrupts are already disabled when CallBack() is called by the timer.
++    if (!sleepingList->IsEmpty()) {
++        int currentTick = kernel->stats->totalTicks;
++
++        // Collect all threads that need to wake up
++        List<SleepingThread*>* toWake = new List<SleepingThread*>();
++        List<SleepingThread*>* remaining = new List<SleepingThread*>();
++
++        while (!sleepingList->IsEmpty()) {
++            SleepingThread* entry = sleepingList->RemoveFront();
++            if (entry->wakeUpTick <= currentTick) {
++                toWake->Append(entry);
++            } else {
++                remaining->Append(entry);
++            }
++        }
++
++        // Put remaining threads back into the sleeping list
++        while (!remaining->IsEmpty()) {
++            sleepingList->Append(remaining->RemoveFront());
++        }
++        delete remaining;
++
++        // Wake up threads in priority order (highest priority first)
++        // so they are added to the ready queue in the correct order.
++        // Since the priority scheduler's ready queue is a SortedList,
++        // the order here is just good practice — the scheduler handles it.
++        while (!toWake->IsEmpty()) {
++            // Find and remove the highest priority thread from toWake
++            SleepingThread* highest = NULL;
++            List<SleepingThread*>* temp = new List<SleepingThread*>();
++
++            while (!toWake->IsEmpty()) {
++                SleepingThread* entry = toWake->RemoveFront();
++                if (highest == NULL || entry->thread->getPriority() >
++                                           highest->thread->getPriority()) {
++                    if (highest != NULL) temp->Append(highest);
++                    highest = entry;
++                } else {
++                    temp->Append(entry);
++                }
++            }
++
++            // Put the rest back
++            while (!temp->IsEmpty()) {
++                toWake->Append(temp->RemoveFront());
++            }
++            delete temp;
++
++            // Wake up the highest priority thread
++            if (highest != NULL) {
++                kernel->scheduler->ReadyToRun(highest->thread);
++                delete highest;
++            }
++        }
++        delete toWake;
++    }
++
++    // Standard time-slicing: yield if something is running
+     if (status != IdleMode) {
+         interrupt->YieldOnReturn();
+     }
+diff --git a/code/threads/alarm.h b/code/threads/alarm.h
+index b488e2d..4dc4e27 100755
+--- a/code/threads/alarm.h
++++ b/code/threads/alarm.h
+@@ -8,8 +8,6 @@
+ //	From this, we provide the ability for a thread to be
+ //	woken up after a delay; we also provide time-slicing.
+ //
+-//	NOTE: this abstraction is not completely implemented.
+-//
+ // Copyright (c) 1992-1996 The Regents of the University of California.
+ // All rights reserved.  See copyright.h for copyright notice and limitation
+ // of liability and disclaimer of warranty provisions.
+@@ -21,22 +19,32 @@
+ #include "utility.h"
+ #include "callback.h"
+ #include "timer.h"
++#include "thread.h"
++#include "list.h"
++
++// A simple struct to pair a sleeping thread with its scheduled wake-up tick
++struct SleepingThread {
++    Thread* thread;  // The thread that is sleeping
++    int wakeUpTick;  // The tick at which this thread should wake up
++};
+ 
+ // The following class defines a software alarm clock.
+ class Alarm : public CallBackObj {
+    public:
+     Alarm(bool doRandomYield);  // Initialize the timer, and callback
+                                 // to "toCall" every time slice.
+-    ~Alarm() { delete timer; }
++    ~Alarm() {
++        delete timer;
++        delete sleepingList;
++    }
+ 
+-    void WaitUntil(int x);  // suspend execution until time > now + x
+-                            // this method is not yet implemented
++    void WaitUntil(int x);  // Suspend execution until time > now + x ticks
+ 
+    private:
+-    Timer *timer;  // the hardware timer device
++    Timer* timer;                         // the hardware timer device
++    List<SleepingThread*>* sleepingList;  // list of sleeping threads
+ 
+-    void CallBack();  // called when the hardware
+-                      // timer generates an interrupt
++    void CallBack();  // called when the hardware timer generates an interrupt
+ };
+ 
+ #endif  // ALARM_H
+diff --git a/code/threads/scheduler.cc b/code/threads/scheduler.cc
+index 7f1a37a..7ebcee5 100755
+--- a/code/threads/scheduler.cc
++++ b/code/threads/scheduler.cc
+@@ -23,6 +23,23 @@
+ #include "scheduler.h"
+ #include "main.h"
+ 
++//----------------------------------------------------------------------
++// ThreadPriorityCompare
++//	Comparator for the SortedList of ready threads.
++//	SortedList::RemoveFront() returns the "smallest" element, so we
++//	invert the usual order: a thread with HIGHER priority is
++//	considered "smaller" so it comes out first.
++//	  returns -1  if x should be dequeued BEFORE y  (x.priority > y.priority)
++//	  returns  1  if y should be dequeued before x
++//	  returns  0  if equal priority (FIFO order preserved within same priority)
++//----------------------------------------------------------------------
++
++static int ThreadPriorityCompare(Thread* x, Thread* y) {
++    if (x->getPriority() > y->getPriority()) return -1;
++    if (x->getPriority() < y->getPriority()) return 1;
++    return 0;
++}
++
+ //----------------------------------------------------------------------
+ // Scheduler::Scheduler
+ // 	Initialize the list of ready but not running threads.
+@@ -30,7 +47,7 @@
+ //----------------------------------------------------------------------
+ 
+ Scheduler::Scheduler() {
+-    readyList = new List<Thread *>;
++    readyList = new SortedList<Thread*>(ThreadPriorityCompare);
+     toBeDestroyed = NULL;
+ }
+ 
+@@ -49,12 +66,12 @@ Scheduler::~Scheduler() { delete readyList; }
+ //	"thread" is the thread to be put on the ready list.
+ //----------------------------------------------------------------------
+ 
+-void Scheduler::ReadyToRun(Thread *thread) {
++void Scheduler::ReadyToRun(Thread* thread) {
+     ASSERT(kernel->interrupt->getLevel() == IntOff);
+     DEBUG(dbgThread, "Putting thread on ready list: " << thread->getName());
+ 
+     thread->setStatus(READY);
+-    readyList->Append(thread);
++    readyList->Insert(thread);  // inserted in priority order
+ }
+ 
+ //----------------------------------------------------------------------
+@@ -65,7 +82,7 @@ void Scheduler::ReadyToRun(Thread *thread) {
+ //	Thread is removed from the ready list.
+ //----------------------------------------------------------------------
+ 
+-Thread *Scheduler::FindNextToRun() {
++Thread* Scheduler::FindNextToRun() {
+     ASSERT(kernel->interrupt->getLevel() == IntOff);
+ 
+     if (readyList->IsEmpty()) {
+@@ -92,8 +109,8 @@ Thread *Scheduler::FindNextToRun() {
+ //		(when the next thread starts running)
+ //----------------------------------------------------------------------
+ 
+-void Scheduler::Run(Thread *nextThread, bool finishing) {
+-    Thread *oldThread = kernel->currentThread;
++void Scheduler::Run(Thread* nextThread, bool finishing) {
++    Thread* oldThread = kernel->currentThread;
+ 
+     ASSERT(kernel->interrupt->getLevel() == IntOff);
+ 
+diff --git a/code/threads/scheduler.h b/code/threads/scheduler.h
+index 2fd1d78..82b28d5 100755
+--- a/code/threads/scheduler.h
++++ b/code/threads/scheduler.h
+@@ -35,10 +35,10 @@ class Scheduler {
+     // SelfTest for scheduler is implemented in class Thread
+ 
+    private:
+-    List<Thread*>* readyList;  // queue of threads that are ready to run,
+-                               // but not running
+-    Thread* toBeDestroyed;     // finishing thread to be destroyed
+-                               // by the next thread that runs
++    SortedList<Thread*>* readyList;  // priority queue of threads ready to run,
++                                     // but not running (highest priority first)
++    Thread* toBeDestroyed;           // finishing thread to be destroyed
++                                     // by the next thread that runs
+ };
+ 
+ #endif  // SCHEDULER_H
+diff --git a/code/threads/thread.cc b/code/threads/thread.cc
+index d75121b..769ac87 100755
+--- a/code/threads/thread.cc
++++ b/code/threads/thread.cc
+@@ -33,9 +33,11 @@ const int STACK_FENCEPOST = 0xdedbeef;
+ //	"threadName" is an arbitrary string, useful for debugging.
+ //----------------------------------------------------------------------
+ 
+-Thread::Thread(char *threadName, bool _has_dynamic_name /*=false*/) {
++Thread::Thread(char* threadName, int priority /*=0*/,
++               bool _has_dynamic_name /*=false*/) {
+     has_dynamic_name = _has_dynamic_name;
+     name = threadName;
++    this->priority = priority;
+     stackTop = NULL;
+     stack = NULL;
+     status = JUST_CREATED;
+@@ -64,7 +66,7 @@ Thread::~Thread() {
+ 
+     ASSERT(this != kernel->currentThread);
+     if (stack != NULL)
+-        DeallocBoundedArray((char *)stack, StackSize * sizeof(int));
++        DeallocBoundedArray((char*)stack, StackSize * sizeof(int));
+     if (has_dynamic_name) delete[] name;
+ }
+ 
+@@ -88,9 +90,9 @@ Thread::~Thread() {
+ //	"arg" is a single argument to be passed to the procedure.
+ //----------------------------------------------------------------------
+ 
+-void Thread::Fork(VoidFunctionPtr func, void *arg) {
+-    Interrupt *interrupt = kernel->interrupt;
+-    Scheduler *scheduler = kernel->scheduler;
++void Thread::Fork(VoidFunctionPtr func, void* arg) {
++    Interrupt* interrupt = kernel->interrupt;
++    Scheduler* scheduler = kernel->scheduler;
+     IntStatus oldLevel;
+ 
+     DEBUG(dbgThread,
+@@ -193,7 +195,7 @@ void Thread::Finish() {
+ //----------------------------------------------------------------------
+ 
+ void Thread::Yield() {
+-    Thread *nextThread;
++    Thread* nextThread;
+     IntStatus oldLevel = kernel->interrupt->SetLevel(IntOff);
+ 
+     ASSERT(this == kernel->currentThread);
+@@ -229,7 +231,7 @@ void Thread::Yield() {
+ //	off the ready list, and switching to it.
+ //----------------------------------------------------------------------
+ void Thread::Sleep(bool finishing) {
+-    Thread *nextThread;
++    Thread* nextThread;
+ 
+     ASSERT(this == kernel->currentThread);
+     ASSERT(kernel->interrupt->getLevel() == IntOff);
+@@ -254,7 +256,7 @@ void Thread::Sleep(bool finishing) {
+ 
+ static void ThreadFinish() { kernel->currentThread->Finish(); }
+ static void ThreadBegin() { kernel->currentThread->Begin(); }
+-void ThreadPrint(Thread *t) { t->Print(); }
++void ThreadPrint(Thread* t) { t->Print(); }
+ 
+ #ifdef PARISC
+ 
+@@ -264,13 +266,13 @@ void ThreadPrint(Thread *t) { t->Print(); }
+ //	so we need to do the conversion.
+ //----------------------------------------------------------------------
+ 
+-static void *PLabelToAddr(void *plabel) {
++static void* PLabelToAddr(void* plabel) {
+     int funcPtr = (int)plabel;
+ 
+     if (funcPtr & 0x02) {
+         // L-Field is set.  This is a PLT pointer
+         funcPtr -= 2;  // Get rid of the L bit
+-        return (*(void **)funcPtr);
++        return (*(void**)funcPtr);
+     } else {
+         // L-field not set.
+         return plabel;
+@@ -290,8 +292,8 @@ static void *PLabelToAddr(void *plabel) {
+ //	"arg" is the parameter to be passed to the procedure
+ //----------------------------------------------------------------------
+ 
+-void Thread::StackAllocate(VoidFunctionPtr func, void *arg) {
+-    stack = (int *)AllocBoundedArray(StackSize * sizeof(int));
++void Thread::StackAllocate(VoidFunctionPtr func, void* arg) {
++    stack = (int*)AllocBoundedArray(StackSize * sizeof(int));
+ 
+ #ifdef PARISC
+     // HP stack works from low addresses to high addresses
+@@ -338,11 +340,11 @@ void Thread::StackAllocate(VoidFunctionPtr func, void *arg) {
+     machineState[InitialArgState] = arg;
+     machineState[WhenDonePCState] = PLabelToAddr(ThreadFinish);
+ #else
+-    machineState[PCState] = (void *)ThreadRoot;
+-    machineState[StartupPCState] = (void *)ThreadBegin;
+-    machineState[InitialPCState] = (void *)func;
+-    machineState[InitialArgState] = (void *)arg;
+-    machineState[WhenDonePCState] = (void *)ThreadFinish;
++    machineState[PCState] = (void*)ThreadRoot;
++    machineState[StartupPCState] = (void*)ThreadBegin;
++    machineState[InitialPCState] = (void*)func;
++    machineState[InitialArgState] = (void*)arg;
++    machineState[WhenDonePCState] = (void*)ThreadFinish;
+ #endif
+ }
+ 
+@@ -403,9 +405,9 @@ static void SimpleThread(int which) {
+ void Thread::SelfTest() {
+     DEBUG(dbgThread, "Entering Thread::SelfTest");
+ 
+-    Thread *t = new Thread("forked thread");
++    Thread* t = new Thread("forked thread");
+ 
+-    t->Fork((VoidFunctionPtr)SimpleThread, (void *)1);
++    t->Fork((VoidFunctionPtr)SimpleThread, (void*)1);
+     kernel->currentThread->Yield();
+     SimpleThread(0);
+ }
+diff --git a/code/threads/thread.h b/code/threads/thread.h
+index 5d0455a..eb42bdb 100755
+--- a/code/threads/thread.h
++++ b/code/threads/thread.h
+@@ -75,18 +75,21 @@ class Thread {
+    private:
+     // NOTE: DO NOT CHANGE the order of these first two members.
+     // THEY MUST be in this position for SWITCH to work.
+-    int *stackTop;                         // the current stack pointer
+-    void *machineState[MachineStateSize];  // all registers except for stackTop
++    int* stackTop;                         // the current stack pointer
++    void* machineState[MachineStateSize];  // all registers except for stackTop
+     bool has_dynamic_name;  // true if the thread name is dynamically allocated
+ 
+    public:
+-    Thread(char *debugName,
++    Thread(char* debugName, int priority = 0,
+            bool _has_dynamic_name = false);  // initialize a Thread
+     ~Thread();                               // deallocate a Thread
+                                              // NOTE -- thread being deleted
+                                              // must not be running when delete
+                                              // is called
+ 
++    int priority;  // scheduling priority (higher number = higher priority)
++    int getPriority() { return priority; }
++
+     int processID;
+     int parrentID;
+     int exitStatus;
+@@ -96,7 +99,7 @@ class Thread {
+ 
+     // basic thread operations
+ 
+-    void Fork(VoidFunctionPtr func, void *arg);
++    void Fork(VoidFunctionPtr func, void* arg);
+     // Make thread run (*func)(arg)
+     void Yield();                // Relinquish the CPU if any
+                                  // other thread is runnable
+@@ -107,20 +110,20 @@ class Thread {
+ 
+     void CheckOverflow();  // Check if thread stack has overflowed
+     void setStatus(ThreadStatus st) { status = st; }
+-    char *getName() { return (name); }
++    char* getName() { return (name); }
+     void Print() { cout << name; }
+     void SelfTest();  // test whether thread impl is working
+ 
+    private:
+     // some of the private data for this class is listed above
+ 
+-    int *stack;           // Bottom of the stack
++    int* stack;           // Bottom of the stack
+                           // NULL if this is the main thread
+                           // (If NULL, don't deallocate stack)
+     ThreadStatus status;  // ready, running or blocked
+-    char *name;
++    char* name;
+ 
+-    void StackAllocate(VoidFunctionPtr func, void *arg);
++    void StackAllocate(VoidFunctionPtr func, void* arg);
+     // Allocate a stack for thread.
+     // Used internally by Fork()
+ 
+@@ -134,11 +137,11 @@ class Thread {
+     void SaveUserState();     // save user-level register state
+     void RestoreUserState();  // restore user-level register state
+ 
+-    AddrSpace *space;  // User code this thread is running.
++    AddrSpace* space;  // User code this thread is running.
+ };
+ 
+ // external function, dummy routine whose sole job is to call Thread::Print
+-extern void ThreadPrint(Thread *thread);
++extern void ThreadPrint(Thread* thread);
+ 
+ // Magical machine-dependent routines, defined in switch.s
+ 
+@@ -150,7 +153,7 @@ extern "C" {
+ void ThreadRoot();
+ 
+ // Stop running oldThread and start running newThread
+-void SWITCH(Thread *oldThread, Thread *newThread);
++void SWITCH(Thread* oldThread, Thread* newThread);
+ }
+ 
+ #endif  // THREAD_H
+diff --git a/code/userprog/exception.cc b/code/userprog/exception.cc
+index 99c11d8..40b71e0 100755
+--- a/code/userprog/exception.cc
++++ b/code/userprog/exception.cc
+@@ -154,6 +154,25 @@ void handle_SC_Add() {
+     return move_program_counter();
+ }
+ 
++void handle_SC_Absolute() {
++    DEBUG(dbgSys, "Absolute " << kernel->machine->ReadRegister(4) << "\n");
++
++    int result = SysAbsolute((int)kernel->machine->ReadRegister(4));
++
++    DEBUG(dbgSys, "Absolute returning with " << result << "\n");
++    kernel->machine->WriteRegister(2, (int)result);
++
++    return move_program_counter();
++}
++
++void handle_SC_Sleep() {
++    int seconds = (int)kernel->machine->ReadRegister(4);
++    DEBUG(dbgSys, "Sleep " << seconds << " second(s)\n");
++    SysSleep(seconds);
++    DEBUG(dbgSys, "Sleep: thread woke up\n");
++    return move_program_counter();
++}
++
+ void handle_SC_ReadNum() {
+     int result = SysReadNum();
+     kernel->machine->WriteRegister(2, result);
+@@ -421,6 +440,10 @@ void ExceptionHandler(ExceptionType which) {
+                     return handle_SC_Halt();
+                 case SC_Add:
+                     return handle_SC_Add();
++                case SC_Absolute:
++                    return handle_SC_Absolute();
++                case SC_Sleep:
++                    return handle_SC_Sleep();
+                 case SC_ReadNum:
+                     return handle_SC_ReadNum();
+                 case SC_PrintNum:
+diff --git a/code/userprog/ksyscall.h b/code/userprog/ksyscall.h
+index c933315..8aee0d2 100755
+--- a/code/userprog/ksyscall.h
++++ b/code/userprog/ksyscall.h
+@@ -26,6 +26,18 @@ void SysHalt() { kernel->interrupt->Halt(); }
+ 
+ int SysAdd(int op1, int op2) { return op1 + op2; }
+ 
++int SysAbsolute(int op) {
++    if (op < 0) return -op;
++    return op;
++}
++
++void SysSleep(int seconds) {
++    // 1 second = 100 ticks in NachOS
++    // If seconds <= 0, return immediately
++    if (seconds <= 0) return;
++    kernel->alarm->WaitUntil(seconds * 100);
++}
++
+ int SysReadNum() {
+     readUntilBlank();
+ 
+diff --git a/code/userprog/syscall.h b/code/userprog/syscall.h
+index 62d3c28..c50e710 100755
+--- a/code/userprog/syscall.h
++++ b/code/userprog/syscall.h
+@@ -48,6 +48,8 @@
+ #define SC_Wait 52
+ #define SC_Signal 53
+ #define SC_GetPid 54
++#define SC_Absolute 55
++#define SC_Sleep 56
+ 
+ #ifndef IN_ASM
+ 
+@@ -70,6 +72,10 @@ void Halt();
+ 
+ int Add(int op1, int op2);
+ 
++int Absolute(int op);
++
++void Sleep(int seconds);
++
+ int ReadNum();
+ 
+ void PrintNum(int num);
+@@ -80,9 +86,9 @@ void PrintChar(char character);
+ 
+ int RandomNum();
+ 
+-void ReadString(char *buffer, int length);
++void ReadString(char* buffer, int length);
+ 
+-void PrintString(char *buffer);
++void PrintString(char* buffer);
+ 
+ /* Address space control operations: Exit, Exec, Execv, and Join */
+ 
+@@ -98,13 +104,13 @@ typedef int ThreadId;
+ /* Run the specified executable, with no args */
+ /* This can be implemented as a call to ExecV.
+  */
+-SpaceId Exec(char *exec_name);
++SpaceId Exec(char* exec_name);
+ 
+ /* Run the executable, stored in the Nachos file "argv[0]", with
+  * parameters stored in argv[1..argc-1] and return the
+  * address space identifier
+  */
+-SpaceId ExecV(int argc, char *argv[]);
++SpaceId ExecV(int argc, char* argv[]);
+ 
+ /* Only return once the user program "id" has finished.
+  * Return the exit status.
+@@ -135,25 +141,25 @@ typedef int OpenFileId;
+ /* Create a Nachos file, with name "name" */
+ /* Note: Create does not open the file.   */
+ /* Return 1 on success, negative error code on failure */
+-int Create(char *name);
++int Create(char* name);
+ 
+-int CreateFile(char *name);
++int CreateFile(char* name);
+ 
+ /* Remove a Nachos file, with name "name" */
+-int Remove(char *name);
++int Remove(char* name);
+ 
+ /* Open the Nachos file "name", and return an "OpenFileId" that can
+  * be used to read and write to the file.
+  */
+ // OpenFileId Open(char *name);
+ 
+-OpenFileId Open(char *name, int type);
++OpenFileId Open(char* name, int type);
+ 
+ /* Write "size" bytes from "buffer" to the open file.
+  * Return the number of bytes actually read on success.
+  * On failure, a negative error code is returned.
+  */
+-int Write(char *buffer, int size, OpenFileId id);
++int Write(char* buffer, int size, OpenFileId id);
+ 
+ /* Read "size" bytes from the open file into "buffer".
+  * Return the number of bytes actually read -- if the open file isn't
+@@ -161,7 +167,7 @@ int Write(char *buffer, int size, OpenFileId id);
+  * characters to read, return whatever is available (for I/O devices,
+  * you should always wait until you can return at least one character).
+  */
+-int Read(char *buffer, int size, OpenFileId id);
++int Read(char* buffer, int size, OpenFileId id);
+ 
+ /* Set the seek position of the open file "id"
+  * to the byte "position".
+@@ -176,11 +182,11 @@ int Close(OpenFileId id);
+ // Ham cho semaphore
+ // Success: 0 - Failed: -1
+ // Ham tao 1 semaphore voi ten semaphore
+-int CreateSemaphore(char *name, int semval);
++int CreateSemaphore(char* name, int semval);
+ 
+-int Wait(char *name);
++int Wait(char* name);
+ 
+-int Signal(char *name);
++int Signal(char* name);
+ 
+ /* User-level thread operations: Fork and Yield.  To allow multiple
+  * threads to run within a user program.
+diff --git a/tmp-compiler/mips-decstation.linux-xgcc.gz b/tmp-compiler/mips-decstation.linux-xgcc.gz
+deleted file mode 100755
+index e69de29..0000000
